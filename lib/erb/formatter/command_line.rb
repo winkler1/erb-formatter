@@ -1,7 +1,6 @@
 
 require 'erb/formatter'
 require 'optparse'
-
 class ERB::Formatter::CommandLine
   def self.tailwindcss_class_sorter(css_path)
     css = File.read(css_path)
@@ -23,7 +22,7 @@ class ERB::Formatter::CommandLine
     @argv = argv.dup
     @stdin = stdin
 
-    @write, @filename, @read_stdin, @code, @single_class_per_line = nil
+    @write, @filename, @read_stdin, @code, @single_class_per_line, @prettier = nil
 
     OptionParser.new do |parser|
       parser.banner = "Usage: #{$0} FILENAME... --write"
@@ -64,6 +63,10 @@ class ERB::Formatter::CommandLine
 
       parser.on("--fail-level LEVEL", "'check' exits(1) on any formatting changes)") do |value|
         @fail_level = value
+      end
+
+      parser.on("-p", "--[no-]prettier", "Enable prettier formatting for .js.erb and script tags") do |value|
+        @prettier = value
       end
 
       parser.on("-h", "--help", "Prints this help") do
@@ -109,7 +112,8 @@ class ERB::Formatter::CommandLine
           filename: filename,
           line_width: @width || 80,
           single_class_per_line: @single_class_per_line,
-          css_class_sorter: css_class_sorter
+          css_class_sorter: css_class_sorter,
+          prettier: @prettier
         )
 
         files_changed = true if html.to_s != code
