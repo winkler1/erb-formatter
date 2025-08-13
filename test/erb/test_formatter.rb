@@ -12,11 +12,14 @@ class ERB::TestFormatter < Minitest::Test
   end
 
   def test_fixtures
-    Dir["#{__dir__}/../fixtures/*.html.erb"].shuffle.each do |erb_path|
-      expected_path = erb_path.chomp('.erb') + '.expected.erb'
+    Dir["#{__dir__}/../fixtures/*.{html,js}.erb"].shuffle.each do |erb_path|
+      expected_path = erb_path.chomp(File.extname(erb_path)) + '.expected.erb'
 
-      # File.write expected_path, ERB::Formatter.format(File.read(erb_path))
-      assert_equal(File.read(expected_path, encoding: "UTF-8"), ERB::Formatter.new(File.read(erb_path)).to_s, "Formatting of #{erb_path} failed")
+      options = { filename: erb_path }
+      options[:prettier] = true if File.basename(erb_path).start_with?('prettier_')
+
+      # File.write expected_path, ERB::Formatter.new(File.read(erb_path), **options).to_s
+      assert_equal(File.read(expected_path, encoding: "UTF-8"), ERB::Formatter.new(File.read(erb_path), **options).to_s, "Formatting of #{erb_path} failed")
     end
   end
 

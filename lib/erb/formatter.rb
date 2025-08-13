@@ -6,10 +6,13 @@ require 'yaml'
 require 'strscan'
 require 'stringio'
 require 'securerandom'
+require 'open3'
+require 'tempfile'
 require 'erb/formatter/version'
 
 require 'syntax_tree'
 require 'syntax_tree/plugin/trailing_comma'
+
 
 class ERB::Formatter
   module SyntaxTreeCommandPatch
@@ -78,12 +81,13 @@ class ERB::Formatter
     new(source, filename: filename).html
   end
 
-  def initialize(source, line_width: 80, single_class_per_line: false, filename: nil, css_class_sorter: nil, debug: $DEBUG)
+  def initialize(source, line_width: 80, single_class_per_line: false, filename: nil, css_class_sorter: nil, prettier: false, debug: $DEBUG)
     @original_source = source.to_s
     @original_source = +@original_source if @original_source.frozen?
     @original_source.force_encoding('UTF-8')
 
     @filename = filename || '(erb)'
+    @prettier = prettier
     @line_width = line_width
     @source = remove_front_matter @original_source.dup
     @html = +"".force_encoding('UTF-8')
@@ -227,9 +231,45 @@ class ERB::Formatter
     "\n#{indent}#{string}"
   end
 
+  def format_javascript_erb
+    # Replace erb placeholders with comments for prettier
+    source_for_prettier = @source.gsub(@erb_tags_regexp) { |placeholder| "/*#{placeholder}*/" }
+
+    formatted_source = run_prettier(source_for_prettier)
+
+    # Restore erb placeholders from comments, then ERB tags from placeholders
+    formatted_source.gsub(%r{/\*(#{ERB_PLACEHOLDER.source})\*/}, '\1').gsub(@erb_tags_regexp, @erb_tags).strip
+  end
+
+  def run_prettier(text)
+    Tempfile.create(['erb-formatter-js', '.js']) do |file|
+      file.write(text)
+      file.close
+
+      prettier_command = "npx prettier --parser babel"
+      prettier_command << " --config ./.prettierrc" if File.exist?(".prettierrc")
+      prettier_command << " \"#{file.path}\""
+
+      stdout_str, stderr_str, status = Open3.capture3(prettier_command)
+
+      stderr_str.lines.each do |line|
+        warn line unless line.downcase.start_with?("npm warn config")
+      end
+
+      return stdout_str if status.success?
+    end
+
+    # if we are here, something went wrong, return original text
+    text
+  rescue Errno::ENOENT
+    warn "warning: prettier not found. js code will not be formatted."
+    text
+  end
+
   def format_text(text)
     p format_text: text if @debug
     return unless text
+
 
     starting_space = text.match?(/\A\s/)
 
@@ -288,8 +328,14 @@ class ERB::Formatter
 
   def format_erb_tags(string)
     p format_erb_tags: string if @debug
-    if %w[style script].include?(tag_stack.last&.first)
+    if %w[style].include?(tag_stack.last&.first)
       html << string.rstrip
+      return
+    end
+
+    if @prettier && 'script' == tag_stack.last&.first
+      @script_buffer ||= +""
+      @script_buffer << string
       return
     end
 
@@ -310,7 +356,7 @@ class ERB::Formatter
         erb_open << ' ' unless ruby_code.start_with?('#')
 
         case ruby_code
-        when RUBY_STANDALONE_BLOCK
+        when RUBY_STANDALONE_BLOCK, /break/
           ruby_code = format_ruby(ruby_code, autoclose: false)
           full_erb_tag = "#{erb_open}#{ruby_code} #{erb_close}"
           html << (erb_pre_match.match?(/\s+\z/) ? indented(full_erb_tag) : full_erb_tag)
@@ -342,6 +388,14 @@ class ERB::Formatter
   end
 
   def format
+    if @prettier && @filename.end_with?('.js.erb')
+      self.html = format_javascript_erb
+      html.strip!
+      html.prepend @front_matter + "\n" if @front_matter
+      html << "\n"
+      return
+    end
+
     scanner = StringScanner.new(source)
 
     until scanner.eos?
@@ -360,9 +414,23 @@ class ERB::Formatter
         if matched.match?(HTML_TAG_CLOSE)
           tag_name = scanner.captures.first
 
-          full_tag = "</#{tag_name}>"
-          tag_stack_pop(tag_name, full_tag)
-          html << (scanner.pre_match.match?(/\s+\z/) ? indented(full_tag) : full_tag)
+          if @prettier && tag_name == 'script'
+            formatted_script = run_prettier(@script_buffer.to_s).strip
+            @script_buffer = nil
+
+            unless formatted_script.empty?
+              formatted_script.lines.each do |line|
+                html << indented(line.chomp)
+              end
+            end
+            tag_stack_pop('script', "</#{tag_name}>")
+            full_tag = "</#{tag_name}>"
+            html << indented(full_tag)
+          else
+            full_tag = "</#{tag_name}>"
+            tag_stack_pop(tag_name, full_tag)
+            html << (scanner.pre_match.match?(/\s+\z/) ? indented(full_tag) : full_tag)
+          end
 
         elsif matched.match(HTML_TAG_OPEN)
           _, tag_name, tag_attrs, _, tag_closing = *scanner.captures
