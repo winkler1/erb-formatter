@@ -205,4 +205,5 @@ class ERB::TestFormatter < Minitest::Test
       ).to_s,
     )
   end
+
 end

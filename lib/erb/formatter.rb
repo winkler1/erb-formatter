@@ -232,13 +232,14 @@ class ERB::Formatter
   end
 
   def format_javascript_erb
-    # Replace erb placeholders with comments for prettier
-    source_for_prettier = @source.gsub(@erb_tags_regexp) { |placeholder| "/*#{placeholder}*/" }
-
+    source_for_prettier = prepare_for_prettier(@source)
     formatted_source = run_prettier(source_for_prettier)
 
-    # Restore erb placeholders from comments, then ERB tags from placeholders
-    formatted_source.gsub(%r{/\*(#{ERB_PLACEHOLDER.source})\*/}, '\1').gsub(@erb_tags_regexp, @erb_tags).strip
+    # Restore erb placeholders. The first gsub removes semicolons that prettier might have added
+    # at the end of a line. The second gsub handles the inline case.
+    restored = formatted_source.gsub(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\);(\R|)/, '\1\2')
+    restored.gsub!(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\)/, '\1')
+    restored.gsub(@erb_tags_regexp, @erb_tags).strip
   end
 
   def run_prettier(text)
@@ -264,6 +265,24 @@ class ERB::Formatter
   rescue Errno::ENOENT
     warn "warning: prettier not found. js code will not be formatted."
     text
+  end
+
+  private def prepare_for_prettier(text)
+    scanner = StringScanner.new(text)
+    output = +""
+    until scanner.eos?
+      # Try to match a string literal first. This handles escaped quotes.
+      if (str = scanner.scan(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/))
+        output << str
+      # Or match an ERB placeholder that is not inside a string.
+      elsif (erb = scanner.scan(@erb_tags_regexp))
+        output << "ERB_PLACEHOLDER(\"#{erb}\")" # Use a function call as a placeholder
+      # Otherwise, just append the next character and continue.
+      else
+        output << scanner.getch
+      end
+    end
+    output
   end
 
   def format_text(text)
@@ -415,7 +434,11 @@ class ERB::Formatter
           tag_name = scanner.captures.first
 
           if @prettier && tag_name == 'script'
-            formatted_script = run_prettier(@script_buffer.to_s).strip
+            source_for_prettier = prepare_for_prettier(@script_buffer.to_s)
+            formatted_from_prettier = run_prettier(source_for_prettier)
+            restored = formatted_from_prettier.gsub(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\);(\R|)/, '\1\2')
+            restored.gsub!(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\)/, '\1')
+            formatted_script = restored.gsub(@erb_tags_regexp, @erb_tags).strip
             @script_buffer = nil
 
             unless formatted_script.empty?
