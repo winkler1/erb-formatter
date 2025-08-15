@@ -104,6 +104,7 @@ class ERB::Formatter
 
     @pre_placeholders = {}
     @erb_tags = {}
+    @erb_string_placeholders = {}
 
     @source.gsub!(ERB_PLACEHOLDER) { |tag| build_uid[].tap { |uid| pre_placeholders[uid] = tag } }
     @source.gsub!(ERB_TAG) { |tag| build_uid[].tap { |uid| erb_tags[uid] = tag } }
@@ -239,6 +240,9 @@ class ERB::Formatter
     # at the end of a line. The second gsub handles the inline case.
     restored = formatted_source.gsub(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\);(\R|)/, '\1\2')
     restored.gsub!(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\)/, '\1')
+    if @erb_string_placeholders.any?
+      restored.gsub!(/(#{Regexp.union(@erb_string_placeholders.keys)})/) { |uid| @erb_string_placeholders[uid] }
+    end
     restored.gsub(@erb_tags_regexp, @erb_tags).strip
   end
 
@@ -273,7 +277,13 @@ class ERB::Formatter
     until scanner.eos?
       # Try to match a string literal first. This handles escaped quotes.
       if (str = scanner.scan(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/))
-        output << str
+        if str.match?(@erb_tags_regexp)
+          uid = ['erb', SecureRandom.uuid, 'tag'].join.delete('-')
+          @erb_string_placeholders[uid] = str
+          output << uid
+        else
+          output << str
+        end
       # Or match an ERB placeholder that is not inside a string.
       elsif (erb = scanner.scan(@erb_tags_regexp))
         output << "ERB_PLACEHOLDER(\"#{erb}\")" # Use a function call as a placeholder
