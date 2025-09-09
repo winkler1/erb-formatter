@@ -3,5 +3,5 @@
 require 'erb'
 
 class ERB::Formatter
-  VERSION = "0.7.3-prettier"
+  VERSION = "0.7.3-prettier-2"
 end
