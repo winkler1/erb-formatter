@@ -1,0 +1,15 @@
+<% if Rails.env.development? %>
+  <script>
+    (function () {
+      var longQueryBtn = document.getElementById("long-query-btn");
+      if (longQueryBtn) {
+        longQueryBtn.addEventListener("click", function (e) {
+          fetch('<%= create_db_blocking_query_path %>', {
+            method: "POST",
+            headers: { "X-CSRF-Token": "<%= form_authenticity_token %>" },
+          });
+        });
+      }
+    })();
+  </script>
+<% end %>

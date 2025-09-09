@@ -236,14 +236,9 @@ class ERB::Formatter
     source_for_prettier = prepare_for_prettier(@source)
     formatted_source = run_prettier(source_for_prettier)
 
-    # Restore erb placeholders. The first gsub removes semicolons that prettier might have added
-    # at the end of a line. The second gsub handles the inline case.
-    restored = formatted_source.gsub(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\);(\R|)/, '\1\2')
-    restored.gsub!(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\)/, '\1')
-    if @erb_string_placeholders.any?
-      restored.gsub!(/(#{Regexp.union(@erb_string_placeholders.keys)})/) { |uid| @erb_string_placeholders[uid] }
-    end
-    restored.gsub(@erb_tags_regexp, @erb_tags).strip
+    result = restore_erb_placeholders(formatted_source).strip
+    validate_no_erb_placeholders!(result)
+    result
   end
 
   def run_prettier(text)
@@ -269,6 +264,35 @@ class ERB::Formatter
   rescue Errno::ENOENT
     warn "warning: prettier not found. js code will not be formatted."
     text
+  end
+
+  # Restore ERB placeholders after prettier formatting
+  # The first gsub removes semicolons that prettier might have added at the end of a line
+  # The second gsub handles the inline case
+  private def restore_erb_placeholders(text)
+    restored = text.gsub(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\);(\R|)/, '\1\2')
+    restored.gsub!(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\)/, '\1')
+    if @erb_string_placeholders.any?
+      restored.gsub!(/(#{Regexp.union(@erb_string_placeholders.keys)})/) { |uid| @erb_string_placeholders[uid] }
+    end
+    restored.gsub(@erb_tags_regexp, @erb_tags)
+  end
+
+  # Validate that no ERB placeholders remain in the output
+  # This prevents data corruption by ensuring all placeholders were properly restored
+  private def validate_no_erb_placeholders!(text)
+    # Check for any remaining ERB placeholder patterns
+    if text.match?(ERB_PLACEHOLDER)
+      remaining_placeholders = text.scan(ERB_PLACEHOLDER)
+      Kernel.raise Error, "ERB placeholder corruption detected! The following placeholders were not restored: #{remaining_placeholders.join(', ')}. This indicates a bug in the ERB placeholder restoration logic."
+    end
+    
+    # Also check for any leftover erb string placeholder UIDs
+    erb_uid_pattern = /erb[a-f0-9]{32}tag/
+    if text.match?(erb_uid_pattern)
+      remaining_uids = text.scan(erb_uid_pattern)
+      Kernel.raise Error, "ERB string placeholder corruption detected! The following placeholder UIDs were not restored: #{remaining_uids.join(', ')}. This indicates a bug in the ERB string placeholder restoration logic."
+    end
   end
 
   private def prepare_for_prettier(text)
@@ -446,14 +470,22 @@ class ERB::Formatter
           if @prettier && tag_name == 'script'
             source_for_prettier = prepare_for_prettier(@script_buffer.to_s)
             formatted_from_prettier = run_prettier(source_for_prettier)
-            restored = formatted_from_prettier.gsub(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\);(\R|)/, '\1\2')
-            restored.gsub!(/ERB_PLACEHOLDER\("(#{ERB_PLACEHOLDER.source})"\)/, '\1')
-            formatted_script = restored.gsub(@erb_tags_regexp, @erb_tags).strip
+            formatted_script = restore_erb_placeholders(formatted_from_prettier).strip
             @script_buffer = nil
 
             unless formatted_script.empty?
+              # Add proper indentation for JavaScript content inside script tags
+              # Prettier formats JS assuming it starts at column 0, so we need to add ERB context indentation
+              base_indent = "  " * tag_stack.size  # Current ERB indentation level
+              
               formatted_script.lines.each do |line|
-                html << indented(line.chomp)
+                stripped_line = line.chomp
+                if stripped_line.empty?
+                  html << "\n"  # Preserve empty lines without extra indentation
+                else
+                  # Add base indentation plus any existing prettier indentation
+                  html << "\n#{base_indent}#{stripped_line}"
+                end
               end
             end
             tag_stack_pop('script', "</#{tag_name}>")
@@ -489,6 +521,10 @@ class ERB::Formatter
 
     html.gsub!(erb_tags_regexp, erb_tags)
     html.gsub!(pre_placeholders_regexp, pre_placeholders)
+    
+    # Validate that no ERB placeholders remain in the output to prevent corruption
+    validate_no_erb_placeholders!(html)
+    
     html.strip!
     html.prepend @front_matter + "\n" if @front_matter
     html << "\n"
